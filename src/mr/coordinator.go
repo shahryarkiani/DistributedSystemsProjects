@@ -1,7 +1,6 @@
 package mr
 
 import (
-	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -20,10 +19,10 @@ type Coordinator struct {
 	inProgressReduce []atomic.Bool
 	completedReduce  []atomic.Bool
 	//atomic ints to keep track of assignments
-	mapPos           atomic.Int32
-	reducePos        atomic.Int32
-	nMapCompleted    atomic.Int32
-	nReduceCompleted atomic.Int32
+	mapPos           atomic.Uint32
+	reducePos        atomic.Uint32
+	nMapCompleted    atomic.Uint32
+	nReduceCompleted atomic.Uint32
 }
 
 //This function assigns tasks to a worker requesting work
@@ -42,7 +41,7 @@ func (c *Coordinator) AssignTask(_ int, reply *Task) error {
 		//a task, but this just reduces the amount of times two workers try to grab the same task
 		mapPos := c.mapPos.Add(1)
 
-		mapPos %= int32(nMap)
+		mapPos %= uint32(nMap)
 
 		//if we looped all the way around and couldn't find anything, we tell it to wait
 		numChecked++
@@ -79,7 +78,7 @@ func (c *Coordinator) AssignTask(_ int, reply *Task) error {
 	for int(c.nReduceCompleted.Load()) < c.nReduce {
 		reducePos := c.reducePos.Add(1)
 
-		reducePos %= int32(c.nReduce)
+		reducePos %= uint32(c.nReduce)
 
 		if numChecked == c.nReduce {
 			reply.Code = WAIT
@@ -93,6 +92,7 @@ func (c *Coordinator) AssignTask(_ int, reply *Task) error {
 
 			reply.Code = REDUCE
 			reply.ReduceNumber = int(reducePos)
+			reply.TaskNumber = nMap
 
 			go func() {
 				time.Sleep(time.Duration(10) * time.Second)
@@ -113,7 +113,7 @@ func (c *Coordinator) AssignTask(_ int, reply *Task) error {
 // workers call this to report that they have finished a specified task
 func (c *Coordinator) ReportComplete(task *Task, reply *CompleteReply) error {
 
-	fmt.Println("task completed")
+	//fmt.Println("task completed")
 
 	reply.CompletionCode = DISCARD
 	if task.Code == MAP {
@@ -153,7 +153,7 @@ func (c *Coordinator) server() {
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
-	return c.nReduceCompleted.Load() == int32(c.nReduce)
+	return c.nReduceCompleted.Load() == uint32(c.nReduce)
 }
 
 // create a Coordinator.
@@ -165,8 +165,8 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c.filenames = files
 	c.nReduce = nReduce
 
-	c.mapPos.Store(-1)
-	c.reducePos.Store(-1)
+	c.mapPos.Store(0xFFFFFFFF)
+	c.reducePos.Store(0xFFFFFFFF)
 
 	//these arrays keep track of which files have been completed/are in progress
 	c.inProgressMap = make([]atomic.Bool, len(files))

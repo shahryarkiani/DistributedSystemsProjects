@@ -54,7 +54,7 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	for task.Code != EXIT {
 
-		fmt.Printf("Got code %v task %v for file %v\n", task.Code, task.TaskNumber, task.Filename)
+		//fmt.Printf("Got code %v task %v reduce number %v for file %v\n", task.Code, task.TaskNumber, task.ReduceNumber, task.Filename)
 
 		if task.Code == WAIT {
 			time.Sleep(time.Duration(300) * time.Millisecond)
@@ -64,7 +64,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			//handle map
 			Map(task, mapf)
 		} else if task.Code == REDUCE {
-			//handle reduce
+			Reduce(task, reducef)
 		}
 
 		ReportDone(task)
@@ -72,7 +72,67 @@ func Worker(mapf func(string, string) []KeyValue,
 		task = RequestTask()
 	}
 
-	fmt.Printf("Everything is done according to coordinator, exiting\n")
+	//fmt.Printf("Everything is done according to coordinator, exiting\n")
+}
+
+func Reduce(task Task, reducef func(string, []string) string) {
+	keyvalues := []KeyValue{}
+
+	for i := 0; i < task.TaskNumber; i++ {
+		filename := fmt.Sprintf("mr-%d-%d", i, task.ReduceNumber)
+
+		file, err := os.Open(filename)
+
+		if err != nil {
+			fmt.Println(err.Error())
+			fmt.Println("Couldn't open reduce input file")
+			os.Exit(1)
+		}
+
+		dec := json.NewDecoder(file)
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err != nil {
+				break
+			}
+			keyvalues = append(keyvalues, kv)
+		}
+	}
+
+	sort.Sort(ByKey(keyvalues))
+
+	outputfile, err := os.CreateTemp(".", "WORKERTMP")
+
+	if err != nil {
+		fmt.Println(err.Error())
+		fmt.Println("Could not create temporary file")
+		os.Exit(1)
+	}
+
+	i := 0
+	for i < len(keyvalues) {
+		j := i + 1
+		for j < len(keyvalues) && keyvalues[j].Key == keyvalues[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, keyvalues[k].Value)
+		}
+		output := reducef(keyvalues[i].Key, values)
+
+		// this is the correct format for each line of Reduce output.
+		fmt.Fprintf(outputfile, "%v %v\n", keyvalues[i].Key, output)
+
+		i = j
+	}
+
+	finalfilename := fmt.Sprintf("mr-out-%d", task.ReduceNumber)
+
+	os.Rename(outputfile.Name(), finalfilename)
+
+	outputfile.Close()
+
 }
 
 func Map(task Task, mapf func(string, string) []KeyValue) {
@@ -99,9 +159,10 @@ func Map(task Task, mapf func(string, string) []KeyValue) {
 		intermediate[index] = append(intermediate[index], kv)
 	}
 
-	for i, _ := range intermediate {
-		sort.Sort(ByKey(intermediate[i]))
-	}
+	//Sorting now isn't necessary, unless we want to implement merge sort in our reduce phase
+	// for i, _ := range intermediate {
+	// 	sort.Sort(ByKey(intermediate[i]))
+	// }
 
 	for i := 0; i < task.ReduceNumber; i++ {
 		output, err := os.CreateTemp(".", "WORKERTMP")
