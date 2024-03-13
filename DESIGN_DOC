@@ -1,0 +1,75 @@
+			+--------------------------+
+			|          CS 4740         |
+			|   LAB 2: LEADER ELECTION |
+			|       DESIGN DOCUMENT    |
+			+--------------------------+
+				   
+---- META INFO ----
+
+>> Fill in your name and email address.
+
+Shahryar Kiani <qkn4qs@virginia.edu>
+
+---- PRELIMINARIES ----
+
+>> If you have any preliminary comments on your submission, notes for the
+>> TAs, please give them here.
+
+>> Please cite any offline or online sources you consulted while
+>> preparing your submission, other than the official documentation, course
+>> text, lecture notes, and course staff.
+
+---- WORKFLOW ----
+
+>> Please describe your implementation workflow for this lab, essentially how
+>> you breakdown it into several manageable tasks. Which baby steps you took
+>> to start adding some codes
+
+I started off by adding the necessary fields(from the paper) to the Raft struct
+
+Then I started with the RequestVote RPC receiver side implementation, since it was relatively simple to do
+
+After that I created the necessary structs for the AppendEntries RPC and implemented the receiver side, since that was
+also pretty simple.
+
+Then I started to think about how to actually handle the timeouts, that took me some time to figure out.(More details in blockers)
+
+After that, I implemented the election and heartbeat methods. I implemented elections first, even though it was more complex than heartbeats. My elections implementation had a pretty tough bug(discussed below), but heartbeats was pretty empty. 
+
+Once I finished those, I composed those two methods along with the timer checks into the ticker, which was pretty simple to implement.
+
+---- BLOCKER ----
+
+>> Please describe the most challenging implementation part of this lab:
+>> why it is hard and how did you resolve it
+
+I'd say that the timeouts were the most challenging part for me, initially I wanted to do something similar to my solution for unresponsive mapreduce tasks in lab 1. When I assigned a task to a worker, I would also run another function on a separate thread that slept for some time, then woke up and checked if the task done. But that was hard to do for this lab for a few reasons. First of all, if I just made a timeout on a separate thread every time I got a message from the leader, I would need some sort of mechanism for cancelling said timeouts(every time we get a new heartbeat, we start a new timeout thread, and the old ones shouldn't start an election when they wake up). The lab review slides used a strategy where they checked if time.Now() was after the election timeout time(which would be pushed back each time a heartbeat/requestvote happens), I thought of using that strategy for my thread timeouts, but I realized I would need to use locks around the reads/writes to the timeout field. I ended up just doing the same strategy as the slides, where the ticker function handles timeouts by waking up every so often(50ms in my code) and checking if the time had passed for a timeout.
+
+---- STRUGGLES ----
+
+>> Please describe your most memorizable debugging experience in this lab:
+>> what is the bug symptom, how did you resolve the issue (if successful), 
+>> and what is the fix 
+
+The main bug I ran into was a situation where 2 raft nodes would start an election and would then indefinitely wait for votes. The bug was semi-rare, making it difficult to quickly track down the reason, since testing changes would take a while until I could reproduce it. The issue ended up being that each peer would acquire the global lock, send out votes, wait for replies to determine if it won the election and update it's state accordingly, then release the lock. The issue is that when a peer is running in an election, it is unable to respond to RequestVote RPCs, since the RequestVote method also needs to acquire the lock. So the bug happened in cases where two peers started an election close to each other, both asking each other for votes, but neither would respond to the other's request for votes. I tried a fix where I had a global atomic boolean variable that kept track of whether an election was occuring, the RequestVote handler would check it before trying to acquire the lock, but there were still cases where the check passed as not an election, but in the meantime, the election started and acquired the lock, resulting in the deadlock. The final fix ended up being pretty simple, I just needed to make the election code send the requests outside of the critical section, only when a response for RequestVote came back would the election code acquire locks and do the checks for whether the peer has become a leader.
+
+---- HELPER ----
+
+>> Which material is most useful for you to implement this lab, slides/website/guides.. 
+
+I'd say the most useful thing was the raft paper, I used page 4 to pretty much guide my entire implementation.
+I also used the code from the lab review slides as a starting point.
+
+
+---- ADVICE ----
+
+>> If you want to leave some advice for future students who do this lab, what
+>> would be your advice
+
+I think coming up with a good system for logging is very helpful when debugging, I used 
+print statements in the format '[serverId] {log info}' that made it easy for me to interpret the logs.
+I would also recommend running the tests like this:
+	go test -run 2A >> output.txt
+This saves the output to a file called output.txt instead of the terminal, which made it easier for me to read the logs
+since I didn't have to scroll up and down the terminal. Make sure to rm output.txt after each run, since each successive run
+will append to it, not overwrite it.
