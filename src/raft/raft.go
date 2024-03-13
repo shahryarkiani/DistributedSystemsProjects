@@ -189,6 +189,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArg, reply *AppendEntriesReply)
 		return
 	}
 
+	if rf.state == CANDIDATE && args.Term == rf.currentTerm { //We lost the election, someone else is the leader
+		//fmt.Println("was candidate, becoming follower")
+		rf.becomeFollower(rf.currentTerm)
+	}
+
 	reply.Term = rf.currentTerm
 	reply.Success = true
 	rf.updateElectionTimeout()
