@@ -1,6 +1,6 @@
 			+--------------------------+
 			|          CS 4740         |
-			|   LAB 2: LEADER ELECTION |
+			|  LAB 2B: LOG REPLICATION |
 			|       DESIGN DOCUMENT    |
 			+--------------------------+
 				   
@@ -25,25 +25,36 @@ Shahryar Kiani <qkn4qs@virginia.edu>
 >> you breakdown it into several manageable tasks. Which baby steps you took
 >> to start adding some codes
 
-I started off by adding the necessary fields(from the paper) to the Raft struct
+I started off by creating a struct to represent a log entry, I also added additional fields to the Raft struct and the AppendEntriesArg struct.
 
-Then I started with the RequestVote RPC receiver side implementation, since it was relatively simple to do
+After that I moved over to the RequestVote handler, since it was a pretty easy part to add support for log replication to.
 
-After that I created the necessary structs for the AppendEntries RPC and implemented the receiver side, since that was
-also pretty simple.
+Then I did the ApplyLogs implementation by just using the slides from the lab review session. I also added a call to start running it when a Raft peer is made.
 
-Then I started to think about how to actually handle the timeouts, that took me some time to figure out.(More details in blockers)
+Then I copied and pasted my doHeartbeats implementation and created a doAppendEntries method, the main difference being that it didn't send an 
+empty log anymore, and that it had additional logic implemented for the replies to handle changing nextIndex, matchIndex, commitIndex, etc.
 
-After that, I implemented the election and heartbeat methods. I implemented elections first, even though it was more complex than heartbeats. My elections implementation had a pretty tough bug(discussed below), but heartbeats was pretty empty. 
+Finally, I updated the AppendEntries rpc handler to include the additional logic for log replication.
 
-Once I finished those, I composed those two methods along with the timer checks into the ticker, which was pretty simple to implement.
-
+After that point, my code was working, but it was quite slow. I thought that one reason for that was that I didn't immediately resend an 
+appendEntries message when a follower responded with a false success. Instead, I would resend AppendEntries as necessary(or just empty heartbeats)
+every 150ms. I ended up refactoring my doAppendEntries method by extracting a method to send an AppendEntries invidually, this made it easy
+to resend for that single server if there was a conflict. I also updated my timeouts for elections and heartbeats/appendentries to improve the
+real time performance.
 ---- BLOCKER ----
 
 >> Please describe the most challenging implementation part of this lab:
 >> why it is hard and how did you resolve it
 
-I'd say that the timeouts were the most challenging part for me, initially I wanted to do something similar to my solution for unresponsive mapreduce tasks in lab 1. When I assigned a task to a worker, I would also run another function on a separate thread that slept for some time, then woke up and checked if the task done. But that was hard to do for this lab for a few reasons. First of all, if I just made a timeout on a separate thread every time I got a message from the leader, I would need some sort of mechanism for cancelling said timeouts(every time we get a new heartbeat, we start a new timeout thread, and the old ones shouldn't start an election when they wake up). The lab review slides used a strategy where they checked if time.Now() was after the election timeout time(which would be pushed back each time a heartbeat/requestvote happens), I thought of using that strategy for my thread timeouts, but I realized I would need to use locks around the reads/writes to the timeout field. I ended up just doing the same strategy as the slides, where the ticker function handles timeouts by waking up every so often(50ms in my code) and checking if the time had passed for a timeout.
+I think the hardest part of this lab for me was making sure that my implementation was fast. I think it's a bit harder to improve the performance
+since it's not like a regular bug where there's one clear fix, it often requires changing the underlying logic or architecture of the solution. 
+After I implemented my first iteration of log replication, it was taking about 80s of real time for a test run and >2s of user time. I took 
+advantage of git to refactor my code to improve the performance, I commited the working but slow version and began to improve it. I realized
+that it was pretty slow for my code to be retrying an AppendEntry with nextIndex-- every 150ms instead of immediately resending, so I refactored
+my code to allow for instand resends after a false success reply from the follower. I also significantly reduced the election timeouts and
+made a slight reduction to the heartbeat timeouts which also improved my performance. I also reran the 2A tests about 50 times and the 2B tests 150
+times to make sure my implementation was working.
+
 
 ---- STRUGGLES ----
 
@@ -51,25 +62,27 @@ I'd say that the timeouts were the most challenging part for me, initially I wan
 >> what is the bug symptom, how did you resolve the issue (if successful), 
 >> and what is the fix 
 
-The main bug I ran into was a situation where 2 raft nodes would start an election and would then indefinitely wait for votes. The bug was semi-rare, making it difficult to quickly track down the reason, since testing changes would take a while until I could reproduce it. The issue ended up being that each peer would acquire the global lock, send out votes, wait for replies to determine if it won the election and update it's state accordingly, then release the lock. The issue is that when a peer is running in an election, it is unable to respond to RequestVote RPCs, since the RequestVote method also needs to acquire the lock. So the bug happened in cases where two peers started an election close to each other, both asking each other for votes, but neither would respond to the other's request for votes. I tried a fix where I had a global atomic boolean variable that kept track of whether an election was occuring, the RequestVote handler would check it before trying to acquire the lock, but there were still cases where the check passed as not an election, but in the meantime, the election started and acquired the lock, resulting in the deadlock. The final fix ended up being pretty simple, I just needed to make the election code send the requests outside of the critical section, only when a response for RequestVote came back would the election code acquire locks and do the checks for whether the peer has become a leader.
+The main bug I ran into happened in the "agreement after follower reconnects" test case. When the follower would reconnect, they wouldn't be caught
+up on any of the logs that they had missed. I used logging to make sure that both the follower was recognizing that it was behind, and that the
+leader was recognizing that it needed to decrement nextIndex. The logs told me that everything was fine, but it still wasn't working. I kept on
+adding additional logs for the various fields in the raft struct until I found something odd. I saw that the match index for the follower was going
+up even though they had replied false for success. That made me realize that my code was still running after it handled the false success case.
+So it would decrement nextIndex, but then it would go to the next lines which updated nextIndex and matchIndex for the success true case. Simply
+adding a return statement fixed all my problems.
 
 ---- HELPER ----
 
 >> Which material is most useful for you to implement this lab, slides/website/guides.. 
 
-I'd say the most useful thing was the raft paper, I used page 4 to pretty much guide my entire implementation.
-I also used the code from the lab review slides as a starting point.
-
+This time I found the raft paper and the lab review slides equally useful.
+I also used these slides: https://www.cs.princeton.edu/courses/archive/fall18/cos418/docs/p7-raft.pdf
+from Princeton to help me visualize the different cases of log replication after a partition.
 
 ---- ADVICE ----
 
 >> If you want to leave some advice for future students who do this lab, what
 >> would be your advice
 
-I think coming up with a good system for logging is very helpful when debugging, I used 
-print statements in the format '[serverId] {log info}' that made it easy for me to interpret the logs.
-I would also recommend running the tests like this:
-	go test -run 2A >> output.txt
-This saves the output to a file called output.txt instead of the terminal, which made it easier for me to read the logs
-since I didn't have to scroll up and down the terminal. Make sure to rm output.txt after each run, since each successive run
-will append to it, not overwrite it.
+I think it's definitely important to organize your code well and try to make methods small. My methods were very large and that resulted in
+me skipping over a pretty simple bug for a long time when debugging. I later refactored my code and it made it much more readable and easy to 
+understand.

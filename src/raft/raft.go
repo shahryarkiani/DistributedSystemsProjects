@@ -128,23 +128,15 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	lastEntry := rf.log[len(rf.log)-1]
-	if lastEntry.Term > args.LastLogTerm { //our log is more up to date
-		reply.Term = rf.currentTerm
-		reply.VoteGranted = false
-		return
-	}
-	if lastEntry.Term == args.Term && (len(rf.log)-1) > args.LastLogIndex { //our log has more stuff in it at the same term
-		reply.Term = rf.currentTerm
-		reply.VoteGranted = false
-		return
-	}
 
 	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
-		rf.votedFor = args.CandidateId
-		reply.Term = rf.currentTerm
-		reply.VoteGranted = true
-		rf.updateElectionTimeout()
-		return
+		if lastEntry.Term < args.LastLogTerm || (lastEntry.Term == args.LastLogTerm && len(rf.log)-1 <= args.LastLogIndex) {
+			rf.votedFor = args.CandidateId
+			reply.Term = rf.currentTerm
+			reply.VoteGranted = true
+			rf.updateElectionTimeout()
+			return
+		}
 	}
 
 	reply.Term = rf.currentTerm
@@ -227,6 +219,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArg, reply *AppendEntriesReply)
 	}
 
 	if args.PrevLogIndex >= len(rf.log) {
+
+		//fmt.Printf("[%d] My log is %v\n", rf.me, rf.log)
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		reply.NextIndex = len(rf.log)
@@ -238,6 +232,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArg, reply *AppendEntriesReply)
 		//fmt.Printf("[%d] terms don't match")
 		reply.Term = rf.currentTerm
 		reply.Success = false
+		//fmt.Printf("[%d] My log is %v\n", rf.me, rf.log)
 
 		latestTerm := rf.log[args.PrevLogIndex].Term
 
@@ -430,7 +425,7 @@ func (rf *Raft) ticker() {
 			rf.doAppendEntries()
 		}
 
-		time.Sleep(time.Duration(50) * time.Millisecond)
+		time.Sleep(time.Duration(25) * time.Millisecond)
 	}
 }
 
@@ -488,12 +483,12 @@ func (rf *Raft) becomeFollower(newterm int) { //should only be called from a loc
 }
 
 func (rf *Raft) updateElectionTimeout() { //should only be called from a locked context
-	ms := 1000 + (rand.Int63() % 750)
+	ms := 250 + (rand.Int63() % 500)
 	rf.electionTimeout = time.Now().Add(time.Duration(ms) * time.Millisecond)
 }
 
 func (rf *Raft) updateHeartbeatTimeout() { //should only be called from a locked context
-	ms := 175
+	ms := 75
 	rf.heartbeatTimeout = time.Now().Add(time.Duration(ms) * time.Millisecond)
 }
 
@@ -586,7 +581,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if isLeader {
 		rf.log = append(rf.log, Entry{Command: command, Term: term})
 		//fmt.Printf("[%d] Appending new entry of %v\n", rf.me, rf.log[len(rf.log)-1])
-		go rf.doAppendEntries()
+		//go rf.doAppendEntries()
 	}
 
 	rf.mu.Unlock()
@@ -614,123 +609,127 @@ func (rf *Raft) ApplyLogs(applyCh chan ApplyMsg) {
 			applyCh <- msg
 		}
 
-		time.Sleep(time.Duration(50) * time.Millisecond)
+		time.Sleep(time.Duration(25) * time.Millisecond)
+	}
+}
+
+func (rf *Raft) sendAppendEntry(args *AppendEntriesArg, server int) {
+	reply := AppendEntriesReply{}
+	reply.Success = false
+	ok := rf.sendAppendEntries(server, args, &reply)
+
+	if !ok {
+		return
+	}
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	//fmt.Printf("[%d] got response from %d\n", rf.me, server)
+	if rf.currentTerm < reply.Term {
+		//fmt.Printf("[%d] becoming follower\n", rf.me)
+		rf.becomeFollower(reply.Term)
+		return
+	}
+
+	if rf.state != LEADER {
+		return
+	}
+
+	if !reply.Success {
+		//fmt.Printf("[%d] LEADER log is %v\n", rf.me, rf.log)
+
+		rf.nextIndex[server]--
+		if reply.NextIndex != -1 {
+			//fmt.Printf("[%d] shifted nextindex from %d to %d\n", rf.me, rf.nextIndex[server], reply.NextIndex)
+			rf.nextIndex[server] = reply.NextIndex
+		}
+
+		args.PrevLogIndex = rf.nextIndex[server] - 1
+		args.PrevLogTerm = rf.log[rf.nextIndex[server]-1].Term
+
+		args.NewEntries = []Entry{} //empty if there's nothing to send(can be used for heartbeats)
+
+		if len(rf.log)-1 >= rf.nextIndex[server] {
+			args.NewEntries = rf.log[rf.nextIndex[server]:] //we send everything that the follower doesn't have yet
+		}
+
+		go rf.sendAppendEntry(args, server)
+
+		return
+	}
+
+	newNext := args.PrevLogIndex + 1 + len(args.NewEntries)
+	newMatch := args.PrevLogIndex + len(args.NewEntries)
+	if newNext > rf.nextIndex[server] {
+		rf.nextIndex[server] = newNext
+	}
+	if newMatch > rf.matchIndex[server] {
+		rf.matchIndex[server] = newMatch
+	}
+
+	//fmt.Printf("[%d] commitIndex is %d\n", rf.me, rf.commitIndex)
+	//fmt.Printf("[%d] matchIndexes are %v\n", rf.me, rf.matchIndex)
+
+	//can we push commit index forward?
+
+	lowestMatchIndex := math.MaxInt
+	numAboveCommit := 0
+
+	for i := range rf.peers { //check for a majority
+		if i == rf.me {
+			continue
+		}
+
+		if rf.matchIndex[i] > rf.commitIndex {
+			numAboveCommit++
+		}
+
+		if rf.matchIndex[i] > rf.commitIndex && rf.matchIndex[i] < lowestMatchIndex {
+			lowestMatchIndex = rf.matchIndex[i]
+		}
+	}
+
+	//fmt.Printf("[%d] numAboveCommit is %d and lowestMatchIndex is %d\n", rf.me, numAboveCommit, lowestMatchIndex)
+
+	if numAboveCommit >= (len(rf.peers)-1)/2 && rf.log[lowestMatchIndex].Term == rf.currentTerm {
+		rf.commitIndex = lowestMatchIndex
+		//fmt.Printf("[%d] LEADER, updated commit index to %d\n", rf.me, rf.commitIndex)
 	}
 }
 
 func (rf *Raft) doAppendEntries() {
-	args := []AppendEntriesArg{}
 	rf.mu.Lock()
 
 	for i := range rf.peers {
 
 		if i == rf.me {
-			args = append(args, AppendEntriesArg{})
 			continue
 		}
 
-		appendArg := AppendEntriesArg{}
-		appendArg.Term = rf.currentTerm
-		appendArg.LeaderId = rf.me
+		args := AppendEntriesArg{}
+		args.Term = rf.currentTerm
+		args.LeaderId = rf.me
 
-		appendArg.PrevLogIndex = rf.nextIndex[i] - 1
-		appendArg.PrevLogTerm = rf.log[rf.nextIndex[i]-1].Term
+		args.PrevLogIndex = rf.nextIndex[i] - 1
+		args.PrevLogTerm = rf.log[rf.nextIndex[i]-1].Term
 
-		appendArg.LeaderCommit = rf.commitIndex
+		args.LeaderCommit = rf.commitIndex
 
-		appendArg.NewEntries = []Entry{} //empty if there's nothing to send(can be used for heartbeats)
+		args.NewEntries = []Entry{} //empty if there's nothing to send(can be used for heartbeats)
 
 		if len(rf.log)-1 >= rf.nextIndex[i] {
-			appendArg.NewEntries = rf.log[rf.nextIndex[i]:] //we send everything that the follower doesn't have yet
+			args.NewEntries = rf.log[rf.nextIndex[i]:] //we send everything that the follower doesn't have yet
 		}
 
-		if len(appendArg.NewEntries) > 0 {
+		if len(args.NewEntries) > 0 {
 			//fmt.Printf("[%d] Sending logs %v to %d\n", rf.me, appendArg.NewEntries, i)
 		}
 
-		args = append(args, appendArg)
+		go rf.sendAppendEntry(&args, i)
 
 	}
 
 	rf.mu.Unlock()
-
-	for idx := range rf.peers {
-
-		if idx == rf.me {
-			continue
-		}
-
-		go func(server int) {
-			reply := AppendEntriesReply{}
-			reply.Success = false
-			ok := rf.sendAppendEntries(server, &args[server], &reply)
-
-			if !ok {
-				return
-			}
-
-			rf.mu.Lock()
-			defer rf.mu.Unlock()
-			//fmt.Printf("[%d] got response from %d\n", rf.me, server)
-			if rf.currentTerm < reply.Term {
-				//fmt.Printf("[%d] becoming follower\n", rf.me)
-				rf.becomeFollower(reply.Term)
-				return
-			}
-
-			if rf.state != LEADER {
-				return
-			}
-
-			if !reply.Success {
-				rf.nextIndex[server]--
-				//it'll be resent later
-				if reply.NextIndex != -1 {
-					rf.nextIndex[server] = reply.NextIndex
-				}
-				return
-			}
-
-			newNext := args[server].PrevLogIndex + 1 + len(args[server].NewEntries)
-			newMatch := args[server].PrevLogIndex + len(args[server].NewEntries)
-			if newNext > rf.nextIndex[server] {
-				rf.nextIndex[server] = newNext
-			}
-			if newMatch > rf.matchIndex[server] {
-				rf.matchIndex[server] = newMatch
-			}
-
-			//fmt.Printf("[%d] commitIndex is %d\n", rf.me, rf.commitIndex)
-			//fmt.Printf("[%d] matchIndexes are %v\n", rf.me, rf.matchIndex)
-
-			//can we push commit index forward?
-
-			lowestMatchIndex := math.MaxInt
-			numAboveCommit := 0
-
-			for i := range rf.peers { //check for a majority
-				if i == rf.me {
-					continue
-				}
-
-				if rf.matchIndex[i] > rf.commitIndex {
-					numAboveCommit++
-				}
-
-				if rf.matchIndex[i] > rf.commitIndex && rf.matchIndex[i] < lowestMatchIndex {
-					lowestMatchIndex = rf.matchIndex[i]
-				}
-			}
-
-			//fmt.Printf("[%d] numAboveCommit is %d and lowestMatchIndex is %d\n", rf.me, numAboveCommit, lowestMatchIndex)
-
-			if numAboveCommit >= (len(rf.peers)-1)/2 && rf.log[lowestMatchIndex].Term == rf.currentTerm {
-				rf.commitIndex = lowestMatchIndex
-				//fmt.Printf("[%d] LEADER, updated commit index to %d\n", rf.me, rf.commitIndex)
-			}
-
-		}(idx)
-	}
 
 	rf.updateHeartbeatTimeout()
 
