@@ -20,6 +20,8 @@ package raft
 import (
 	//	"bytes"
 
+	"bytes"
+	"fmt"
 	"math"
 	"math/rand"
 	"sync"
@@ -27,6 +29,7 @@ import (
 	"time"
 
 	//	"6.5840/labgob"
+	"6.5840/labgob"
 	"6.5840/labrpc"
 )
 
@@ -133,6 +136,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		if lastEntry.Term < args.LastLogTerm || (lastEntry.Term == args.LastLogTerm && len(rf.log)-1 <= args.LastLogIndex) {
 			rf.votedFor = args.CandidateId
 			reply.Term = rf.currentTerm
+			rf.persist()
 			reply.VoteGranted = true
 			rf.updateElectionTimeout()
 			return
@@ -236,11 +240,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArg, reply *AppendEntriesReply)
 
 		latestTerm := rf.log[args.PrevLogIndex].Term
 
-		i := len(rf.log)
+		i := args.PrevLogIndex
 
 		for i > 0 {
 			i--
-			if rf.log[args.PrevLogIndex].Term != latestTerm { //this is where the term switch happened
+			if rf.log[i].Term != latestTerm { //this is where the term switch happened
 				reply.NextIndex = i + 1
 				break
 			}
@@ -283,6 +287,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArg, reply *AppendEntriesReply)
 	args.NewEntries = args.NewEntries[i:]         //We also remove the earlier entries that are already in this log
 
 	rf.log = append(rf.log, args.NewEntries...)
+	rf.persist()
 
 	//fmt.Printf("[%d] Log is now %v\n", rf.me, rf.log)
 
@@ -309,7 +314,7 @@ func (rf *Raft) doElection() {
 	rf.currentTerm++
 	rf.votedFor = rf.me
 	rf.state = CANDIDATE
-
+	rf.persist()
 	args.CandidateId = rf.me
 	args.Term = rf.currentTerm
 
@@ -451,12 +456,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.currentTerm = 0
 	rf.updateElectionTimeout()
 
-	// initialize from state persisted before a crash
-	rf.readPersist(persister.ReadRaftState())
-
 	rf.log = make([]Entry, 1)
 	rf.log[0].Command = nil
 	rf.log[0].Term = 0
+
+	// initialize from state persisted before a crash
+	rf.readPersist(persister.ReadRaftState())
 
 	rf.nextIndex = make([]int, len(peers))
 	rf.matchIndex = make([]int, len(peers))
@@ -480,6 +485,7 @@ func (rf *Raft) becomeFollower(newterm int) { //should only be called from a loc
 	rf.state = FOLLOWER
 	rf.currentTerm = newterm
 	rf.votedFor = -1
+	rf.persist()
 }
 
 func (rf *Raft) updateElectionTimeout() { //should only be called from a locked context
@@ -510,6 +516,14 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// raftstate := w.Bytes()
 	// rf.persister.Save(raftstate, nil)
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.log)
+	raftstate := w.Bytes()
+	rf.persister.Save(raftstate, nil)
 }
 
 // restore previously persisted state.
@@ -530,6 +544,20 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+
+	var votedFor int
+	var currentTerm int
+	var log []Entry
+	if d.Decode(&votedFor) != nil || d.Decode(&currentTerm) != nil || d.Decode(&log) != nil {
+		fmt.Printf("[%d] couldn't read from persisted state\n", rf.me)
+	} else {
+		rf.votedFor = votedFor
+		rf.currentTerm = currentTerm
+		rf.log = log
+	}
 }
 
 // the service says it has created a snapshot that has
@@ -582,6 +610,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.log = append(rf.log, Entry{Command: command, Term: term})
 		//fmt.Printf("[%d] Appending new entry of %v\n", rf.me, rf.log[len(rf.log)-1])
 		//go rf.doAppendEntries()
+		rf.persist()
 	}
 
 	rf.mu.Unlock()
@@ -639,7 +668,7 @@ func (rf *Raft) sendAppendEntry(args *AppendEntriesArg, server int) {
 		//fmt.Printf("[%d] LEADER log is %v\n", rf.me, rf.log)
 
 		rf.nextIndex[server]--
-		if reply.NextIndex != -1 {
+		if reply.NextIndex > 0 {
 			//fmt.Printf("[%d] shifted nextindex from %d to %d\n", rf.me, rf.nextIndex[server], reply.NextIndex)
 			rf.nextIndex[server] = reply.NextIndex
 		}

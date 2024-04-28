@@ -1,0 +1,73 @@
+			+--------------------------+
+			|          CS 4740         |
+			|   LAB 2C: PERSISTENCE    |
+			|       DESIGN DOCUMENT    |
+			+--------------------------+
+				   
+---- META INFO ----
+
+>> Fill in your name and email address.
+
+Shahryar Kiani <qkn4qs@virginia.edu>
+
+---- PRELIMINARIES ----
+
+>> If you have any preliminary comments on your submission, notes for the
+>> TAs, please give them here.
+
+>> Please cite any offline or online sources you consulted while
+>> preparing your submission, other than the official documentation, course
+>> text, lecture notes, and course staff.
+
+---- WORKFLOW ----
+
+>> Please describe your implementation workflow for this lab, essentially how
+>> you breakdown it into several manageable tasks. Which baby steps you took
+>> to start adding some codes
+
+For this lab I started by writing by implementing the persist methods. So that rf.persist() and rf.readPersist().
+Those ended up being pretty easy to implement, since I just used the example code in the comments and put in the fields that needed
+to be persisted. Then I added the persist calls where they were needed. At that point my code was passing most of the tests 
+except for figure 8 unreliable. I thought that maybe it was an issue due to my log replication not being fast enough. So I tried implementing
+the faster log replication, but I ended up getting some index out of bound issues that I couldn't locate the cause for. I then reverted back
+to my original log replication implementation, where I realized what was causing my bug. I essentially had a condition that was always
+true in my for loop that searched for where the first term conflict happens. I think that compounded with the case where there's a
+raft server that has a completely empty log. After fixing that bug, all tests were passing.
+
+---- BLOCKER ----
+
+>> Please describe the most challenging implementation part of this lab:
+>> why it is hard and how did you resolve it
+
+There wasn't anything particularly difficult about the implementation, it wasn't that many lines of code. I did have a small bug with my code
+but I think that belongs in the struggles section.
+
+---- STRUGGLES ----
+
+>> Please describe your most memorizable debugging experience in this lab:
+>> what is the bug symptom, how did you resolve the issue (if successful), 
+>> and what is the fix 
+
+I only really had one noticeable bug in this assignment. In lab 2b, I had implemented some optimizations for log replication where
+the follower server would tell the leader which index the first entry for a term with a conflict occured so that it could skip a large
+number of nextIndex-- repetitions. It turns out my implementation was doing the same thing as nextIndex--, because the condition in the for loop
+was always true. For some reason I didn't get a warning about it from basic static analysis, even though it should have been obvious that it
+would always be true. I only noticed it after I had tried implementing the log replication optimizations from the review slides. Fixing that solved
+the issue.
+
+
+---- HELPER ----
+
+
+>> Which material is most useful for you to implement this lab, slides/website/guides.. 
+
+
+The lab review slides were very useful
+
+---- ADVICE ----
+
+>> If you want to leave some advice for future students who do this lab, what
+>> would be your advice
+
+I recommend making sure you have a deep understanding of your lab2b solution, since that's where any bugs will really be for lab2c.
+Also, make sure to run the tests multiple times(like 100 times) to catch any rare issues.
