@@ -1,0 +1,2 @@
+My implementation of lab 1(MapReduce) and parts a, b, and c of lab 2(Raft Leader Election, Log Replication, Log Persistence)
+Labs are from the MIT 6.5840: Distributed Systems course at http://nil.csail.mit.edu/6.5840/2023/
