@@ -1,0 +1,88 @@
+			+--------------------------+
+			|          CS 4740         |
+			|  LAB 2B: LOG REPLICATION |
+			|       DESIGN DOCUMENT    |
+			+--------------------------+
+				   
+---- META INFO ----
+
+>> Fill in your name and email address.
+
+Shahryar Kiani <qkn4qs@virginia.edu>
+
+---- PRELIMINARIES ----
+
+>> If you have any preliminary comments on your submission, notes for the
+>> TAs, please give them here.
+
+>> Please cite any offline or online sources you consulted while
+>> preparing your submission, other than the official documentation, course
+>> text, lecture notes, and course staff.
+
+---- WORKFLOW ----
+
+>> Please describe your implementation workflow for this lab, essentially how
+>> you breakdown it into several manageable tasks. Which baby steps you took
+>> to start adding some codes
+
+I started off by creating a struct to represent a log entry, I also added additional fields to the Raft struct and the AppendEntriesArg struct.
+
+After that I moved over to the RequestVote handler, since it was a pretty easy part to add support for log replication to.
+
+Then I did the ApplyLogs implementation by just using the slides from the lab review session. I also added a call to start running it when a Raft peer is made.
+
+Then I copied and pasted my doHeartbeats implementation and created a doAppendEntries method, the main difference being that it didn't send an 
+empty log anymore, and that it had additional logic implemented for the replies to handle changing nextIndex, matchIndex, commitIndex, etc.
+
+Finally, I updated the AppendEntries rpc handler to include the additional logic for log replication.
+
+After that point, my code was working, but it was quite slow. I thought that one reason for that was that I didn't immediately resend an 
+appendEntries message when a follower responded with a false success. Instead, I would resend AppendEntries as necessary(or just empty heartbeats)
+every 150ms. I ended up refactoring my doAppendEntries method by extracting a method to send an AppendEntries invidually, this made it easy
+to resend for that single server if there was a conflict. I also updated my timeouts for elections and heartbeats/appendentries to improve the
+real time performance.
+---- BLOCKER ----
+
+>> Please describe the most challenging implementation part of this lab:
+>> why it is hard and how did you resolve it
+
+I think the hardest part of this lab for me was making sure that my implementation was fast. I think it's a bit harder to improve the performance
+since it's not like a regular bug where there's one clear fix, it often requires changing the underlying logic or architecture of the solution. 
+After I implemented my first iteration of log replication, it was taking about 80s of real time for a test run and >2s of user time. I took 
+advantage of git to refactor my code to improve the performance, I commited the working but slow version and began to improve it. I realized
+that it was pretty slow for my code to be retrying an AppendEntry with nextIndex-- every 150ms instead of immediately resending, so I refactored
+my code to allow for instand resends after a false success reply from the follower. I also significantly reduced the election timeouts and
+made a slight reduction to the heartbeat timeouts which also improved my performance. I also reran the 2A tests about 50 times and the 2B tests 150
+times to make sure my implementation was working.
+
+
+---- STRUGGLES ----
+
+>> Please describe your most memorizable debugging experience in this lab:
+>> what is the bug symptom, how did you resolve the issue (if successful), 
+>> and what is the fix 
+
+The main bug I ran into happened in the "agreement after follower reconnects" test case. When the follower would reconnect, they wouldn't be caught
+up on any of the logs that they had missed. I used logging to make sure that both the follower was recognizing that it was behind, and that the
+leader was recognizing that it needed to decrement nextIndex. The logs told me that everything was fine, but it still wasn't working. I kept on
+adding additional logs for the various fields in the raft struct until I found something odd. I saw that the match index for the follower was going
+up even though they had replied false for success. That made me realize that my code was still running after it handled the false success case.
+So it would decrement nextIndex, but then it would go to the next lines which updated nextIndex and matchIndex for the success true case. Simply
+adding a return statement fixed all my problems.
+
+---- HELPER ----
+
+>> Which material is most useful for you to implement this lab, slides/website/guides.. 
+
+This time I found the raft paper and the lab review slides equally useful.
+I also used these slides: https://www.cs.princeton.edu/courses/archive/fall18/cos418/docs/p7-raft.pdf
+from Princeton to help me visualize the different cases of log replication after a partition.
+
+---- ADVICE ----
+
+>> If you want to leave some advice for future students who do this lab, what
+>> would be your advice
+
+I think it's definitely important to organize your code well and try to make methods small. My methods were very large and that resulted in
+me skipping over a pretty simple bug for a long time when debugging. I later refactored my code and it made it much more readable and easy to 
+understand.
